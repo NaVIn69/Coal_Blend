@@ -1,0 +1,1674 @@
+import os
+from fastapi import FastAPI, Depends, HTTPException, status, Response, BackgroundTasks, UploadFile, File, Form
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.ext.declarative import declarative_base
+from pydantic import BaseModel, EmailStr
+from datetime import timedelta, datetime
+from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
+import logging
+from typing import List, Dict, Optional
+import joblib
+import numpy as np
+from genetic_algorithm import CoalBlendOptimizer
+import pandas as pd
+import asyncio
+import traceback
+import PyPDF2
+from typing import Dict, Any
+import io
+import re
+
+import models
+import schemas
+import auth
+from database import engine, get_db
+
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Database setup
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(DATABASE_URL)
+Base = declarative_base()
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Database models
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255))
+    email = Column(String(255))
+    # Add other user attributes
+
+# Dependency for database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db;
+    finally:
+        db.close()
+
+# FastAPI app
+app = FastAPI(title="User Authentication API")
+
+# Add CORS middleware with specific settings
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # Add your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Set-Cookie"]
+)
+
+# Create database tables
+# models.Base.metadata.create_all(bind=engine)
+
+# Login request model
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+# Load the prediction models
+def load_models():
+    models_dir = os.path.join(os.path.dirname(__file__), "Models")
+    try:
+        # Load the single model that takes 22 inputs and gives 8 outputs
+        with open(os.path.join(models_dir, "multioutput_rf_model.pkl"), "rb") as f:
+            model = joblib.load(f)
+        return model
+    except Exception as e:
+        logger.error(f"Error loading model: {str(e)}")
+        raise
+
+# Load model at startup
+prediction_model = load_models()
+
+# Add a global dictionary to track running simulations
+running_simulations = {}
+
+# @app.post("/test-cors")
+# def test_cors():
+#     return {"message": "CORS works!"}
+
+# fixed carbon fc , s->sulphur , n->nitrogen ,
+def calculate_emissions(fc, ash, vm, s, n, cri, csr):
+    emissions = {}
+
+    # CO2
+    emissions["CO2_Emissions"] = 0.7 * (fc / 100) * (44.01 / 12.01) * 1000
+    # CO
+    emissions["CO_Emissions"] = 0.3 * (fc / 100) * (28.01 / 12.01) * 1000
+    # SO2
+    emissions["SO2_Emissions"] = (s / 100) * (64.07 / 32.06) * 1000
+    # NO
+    emissions["NO_Emissions"] = 0.2 * (n / 100) * (30.01 / 14.01) * 1000
+    # NO2
+    emissions["NO2_Emissions"] = 0.2 * (n / 100) * (46.01 / 14.01) * 1000
+
+    # PM Index
+    pm_index = 0.4 * (ash / 9) + 0.3 * (cri / 28) + 0.3 * (1 - csr / 65)
+    emissions["PM_Index"] = pm_index
+    emissions["PM10_Emissions"] = 0.7 * pm_index
+    emissions["PM25_Emissions"] = 0.3 * pm_index
+
+    # VOC Index
+    voc_index = 0.5 * (vm / 2.5) + 0.2 * (cri / 28) + 0.2 * (1 - csr / 65) + 0.1 * (n / 1.0)
+    emissions["VOC_Index"] = voc_index
+    emissions["VOC_Emissions"] = 0.9 * voc_index
+    emissions["PAH_Emissions"] = 0.1 * voc_index
+
+    return emissions
+
+
+
+    """Helper function to parse coal properties from text."""
+    def extract_number(pattern, text):
+        import re
+        match = re.search(fr'{pattern}\s*[:=]?\s*([\d.]+)', text, re.IGNORECASE)
+        return float(match.group(1)) if match else None
+
+    return {
+        "IM": extract_number(r'(?:Inherent\s+Moisture|IM)', text),
+        "Ash": extract_number(r'Ash', text),
+        "VM": extract_number(r'(?:Volatile\s+Matter|VM)', text),
+        "FC": extract_number(r'(?:Fixed\s+Carbon|FC)', text),
+        "S": extract_number(r'(?:Sulphur|Sulfur|S)', text),
+        "P": extract_number(r'(?:Phosphorus|P)', text),
+        "SiO2": extract_number(r'SiO2', text),
+        "Al2O3": extract_number(r'Al2O3', text),
+        "Fe2O3": extract_number(r'Fe2O3', text),
+        "CaO": extract_number(r'CaO', text),
+        "MgO": extract_number(r'MgO', text),
+        "Na2O": extract_number(r'Na2O', text),
+        "K2O": extract_number(r'K2O', text),
+        "TiO2": extract_number(r'TiO2', text),
+        "Mn3O4": extract_number(r'Mn3O4', text),
+        "SO3": extract_number(r'SO3', text),
+        "P2O5": extract_number(r'P2O5', text),
+        "CRI": extract_number(r'CRI', text),
+        "CSR": extract_number(r'CSR', text),
+        "N": extract_number(r'(?:Nitrogen|N)', text),
+    }
+
+def parse_coal_properties(text: str) -> dict:
+    """Helper function to parse coal properties from text."""
+    def extract_number(pattern, text):
+        import re
+        import math
+        
+        match = re.search(fr'{pattern}\s*[:=]?\s*([\d.]+)', text, re.IGNORECASE)
+        if not match:
+            return None
+            
+        try:
+            value = float(match.group(1))
+            # Validate the value is a finite number
+            if not math.isfinite(value):
+                return None
+            # Round to 6 decimal places to avoid floating point precision issues
+            return round(value, 6)
+        except (ValueError, TypeError):
+            return None
+
+    # Parse all properties
+    result = {
+        "IM": extract_number(r'(?:Inherent\s+Moisture|IM)', text),
+        "Ash": extract_number(r'Ash', text),
+        "VM": extract_number(r'(?:Volatile\s+Matter|VM)', text),
+        "FC": extract_number(r'(?:Fixed\s+Carbon|FC)', text),
+        "S": extract_number(r'(?:Sulphur|Sulfur|S)', text),
+        "P": extract_number(r'(?:Phosphorus|P)', text),
+        "SiO2": extract_number(r'SiO2', text),
+        "Al2O3": extract_number(r'Al2O3', text),
+        "Fe2O3": extract_number(r'Fe2O3', text),
+        "CaO": extract_number(r'CaO', text),
+        "MgO": extract_number(r'MgO', text),
+        "Na2O": extract_number(r'Na2O', text),
+        "K2O": extract_number(r'K2O', text),
+        "TiO2": extract_number(r'TiO2', text),
+        "Mn3O4": extract_number(r'Mn3O4', text),
+        "SO3": extract_number(r'SO3', text),
+        "P2O5": extract_number(r'P2O5', text),
+        "CRI": extract_number(r'CRI', text),
+        "CSR": extract_number(r'CSR', text),
+        "N": extract_number(r'(?:Nitrogen|N)', text),
+    }
+    
+    # Remove None values
+    return {k: v for k, v in result.items() if v is not None}
+
+
+
+@app.post("/register")
+def register_user(user: schemas.UserCreate, response: Response, db: Session = Depends(get_db)):
+    logger.info(f"Registering user with email: {user.email}")
+    # Check if user already exists
+    db_user = db.query(models.User).filter(models.User.email == user.email).first()
+    if db_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create new user
+    hashed_password = auth.get_password_hash(user.password)
+    db_user = models.User(
+        email=user.email,
+        name=user.name,
+        hashed_password=hashed_password
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    # Create access token for the new user
+    access_token_expires = timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = auth.create_access_token(
+        data={"sub": db_user.email}, expires_delta=access_token_expires
+    )
+
+    # Set cookie with JWT token
+    response.set_cookie(
+        key="auth_token",
+        value=access_token,  # Store just the token without Bearer prefix
+        httponly=True,  # Prevents JavaScript access to the cookie
+        secure=False,    # Set to True in production with HTTPS
+        samesite="lax", # Protects against CSRF
+        max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Convert minutes to seconds
+        path="/"        # Cookie is available for all paths
+    )
+
+    logger.info(f"User registered successfully: {db_user.email}")
+    return {
+        "message": "Registration successful",
+        "user": {
+            "id": db_user.id,
+            "email": db_user.email,
+            "name": db_user.name
+        },
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+@app.post("/login")
+async def login(
+    login_data: LoginRequest,
+    response: Response,
+    db: Session = Depends(get_db)
+):
+    logger.info(f"Login attempt for email: {login_data.email}")
+    # Find user by email
+    user = db.query(models.User).filter(models.User.email == login_data.email).first()
+    logger.info(f"User found: {user}")
+    
+    # Verify user exists and password is correct
+    if not user or not auth.verify_password(login_data.password, user.hashed_password):
+        logger.warning(f"Login failed for email: {login_data.email}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password"
+        )
+     
+    # Create access token
+    access_token_expires = timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = auth.create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+
+    # Set cookie with JWT token
+    response.set_cookie(
+        key="auth_token",
+        value=access_token,  # Store just the token without Bearer prefix
+        httponly=True,  # Prevents JavaScript access to the cookie
+        secure=False,    # Set to True in production with HTTPS
+        samesite="lax", # Protects against CSRF
+        max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Convert minutes to seconds
+        path="/"        # Cookie is available for all paths
+    )
+
+    logger.info(f"Login successful for user: {user.email}")
+    return {
+        "message": "Login successful",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name
+        },
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+@app.post("/logout")
+async def logout(response: Response):
+    # Clear the auth token cookie
+    response.delete_cookie(
+        key="auth_token",
+        httponly=True,
+        samesite="lax",
+        secure=True
+    )
+    return {"message": "Successfully logged out"}
+
+@app.get("/users/me", response_model=schemas.User)
+async def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
+    return current_user
+
+@app.post("/predict")
+async def predict_blend(
+    prediction_input: schemas.PredictionInput,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    try:
+        logger.info(f"Processing prediction request for user: {current_user.email}")
+        logger.info(f"Input blends: {prediction_input.blends}")
+        
+        # Validate total percentage equals 100
+        total_percentage = sum(blend.percentage for blend in prediction_input.blends)
+        if abs(total_percentage - 100) > 0.01:  # Allow for small floating point differences
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Total percentage must equal 100%"
+            )
+
+        # Get properties for all coals in the blend
+        coal_properties = {}
+        for blend in prediction_input.blends:
+            coal = db.query(models.CoalProperties).filter(
+                models.CoalProperties.coal_name == blend.coal_name
+            ).first()
+            
+            if not coal:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Coal properties not found for: {blend.coal_name}"
+                )
+            
+            coal_properties[blend.coal_name] = coal
+            logger.info(f"\nCoal Properties for {blend.coal_name} ({blend.percentage}%):")
+            logger.info(f"IM: {coal.IM}")
+            logger.info(f"Ash: {coal.Ash}")
+            logger.info(f"VM: {coal.VM}")
+            logger.info(f"FC: {coal.FC}")
+            logger.info(f"S: {coal.S}")
+            logger.info(f"P: {coal.P}")
+            logger.info(f"SiO2: {coal.SiO2}")
+            logger.info(f"Al2O3: {coal.Al2O3}")
+            logger.info(f"Fe2O3: {coal.Fe2O3}")
+            logger.info(f"CaO: {coal.CaO}")
+            logger.info(f"MgO: {coal.MgO}")
+            logger.info(f"Na2O: {coal.Na2O}")
+            logger.info(f"K2O: {coal.K2O}")
+            logger.info(f"TiO2: {coal.TiO2}")
+            logger.info(f"Mn3O4: {coal.Mn3O4}")
+            logger.info(f"SO3: {coal.SO3}")
+            logger.info(f"P2O5: {coal.P2O5}")
+            logger.info(f"BaO: {coal.BaO}")
+            logger.info(f"SrO: {coal.SrO}")
+            logger.info(f"ZnO: {coal.ZnO}")
+            logger.info(f"CRI: {coal.CRI}")
+            logger.info(f"CSR: {coal.CSR}")
+            logger.info(f"N:{coal.N}")
+
+        # Calculate weighted averages for blend properties
+        blend_properties = {
+            "IM": 0.0,
+            "Ash": 0.0,
+            "VM_weight": 0.0,
+            "FC": 0.0,
+            "S": 0.0,
+            "P": 0.0,
+            "SiO2": 0.0,
+            "Al2O3": 0.0,
+            "Fe2O3": 0.0,
+            "CaO": 0.0,
+            "MgO": 0.0,
+            "Na2O": 0.0,
+            "K2O": 0.0,
+            "TiO2": 0.0,
+            "Mn3O4": 0.0,
+            "SO3": 0.0,
+            "P2O5": 0.0,
+            "BaO": 0.0,
+            "SrO": 0.0,
+            "ZnO": 0.0,
+            "CRI_weight": 0.0,
+            "CSR_weight": 0.0,
+            "N":0.0
+        }
+
+        # Map database column names to model input format
+        property_mapping = {
+            "IM": "IM",
+            "Ash": "Ash",
+            "VM_weight": "VM",
+            "FC": "FC",
+            "S": "S",
+            "P": "P",
+            "SiO2": "SiO2",
+            "Al2O3": "Al2O3",
+            "Fe2O3": "Fe2O3",
+            "CaO": "CaO",
+            "MgO": "MgO",
+            "Na2O": "Na2O",
+            "K2O": "K2O",
+            "TiO2": "TiO2",
+            "Mn3O4": "Mn3O4",
+            "SO3": "SO3",
+            "P2O5": "P2O5",
+            "BaO": "BaO",
+            "SrO": "SrO",
+            "ZnO": "ZnO",
+            "CRI_weight": "CRI",
+            "CSR_weight": "CSR",
+            "N":"N"
+        }
+
+        logger.info("\nCalculating weighted averages for blend properties:")
+        for blend in prediction_input.blends:
+            coal = coal_properties[blend.coal_name]
+            weight = blend.percentage / 100.0  # Convert percentage to decimal
+            
+            logger.info(f"\nCoal: {blend.coal_name} (Weight: {weight})")
+            
+            # Calculate weighted averages using the mapping
+            for model_property, db_column in property_mapping.items():
+                value = getattr(coal, db_column)
+                # Convert None to 0.0
+                if value is None:
+                    value = 0.0
+                weighted_value = value * weight
+                blend_properties[model_property] += weighted_value
+                logger.info(f"{model_property}: {value} * {weight} = {weighted_value}")
+
+        logger.info("\nFinal weighted averages for blend properties:")
+        for property_name, value in blend_properties.items():
+            logger.info(f"{property_name}: {value:.4f}")
+
+        logger.info(f"\nCalculated blend properties: {blend_properties}")
+
+        # Prepare input for model in the correct order
+        model_input = np.array([[
+            blend_properties["IM"],
+            blend_properties["Ash"],
+            blend_properties["VM_weight"],
+            blend_properties["FC"],
+            blend_properties["S"],
+            blend_properties["P"],
+            blend_properties["SiO2"],
+            blend_properties["Al2O3"],
+            blend_properties["Fe2O3"],
+            blend_properties["CaO"],
+            blend_properties["MgO"],
+            blend_properties["Na2O"],
+            blend_properties["K2O"],
+            blend_properties["TiO2"],
+            blend_properties["Mn3O4"],
+            blend_properties["SO3"],
+            blend_properties["P2O5"],
+            blend_properties["BaO"],
+            blend_properties["SrO"],
+            blend_properties["ZnO"],
+            blend_properties["CRI_weight"],
+            blend_properties["CSR_weight"],
+            
+        ]])
+
+        logger.info(f"Model input shape: {model_input.shape}")
+        logger.info(f"Model input: {model_input}")
+
+        # Get predictions from the model
+        predictions = prediction_model.predict(model_input)[0]
+        
+        # Model outputs 8 values in this order:
+        # [%ash, %vm, %fc, %CSN, CRI, CSR, ASH, VM]
+        predicted_coal_properties = {
+            "ash_percent": float(predictions[0]),
+            "vm_percent": float(predictions[1]),
+            "fc_percent": float(predictions[2]),
+            "CSN": float(predictions[3])       
+        }
+        predicted_coke_properties={
+            "CRI": float(predictions[4]*100),
+            "CSR": float(predictions[5]*100),
+            "ASH": float(predictions[6]*100),
+            "VM": float(predictions[7]*100),
+            "N":float(blend_properties["N"]*100*0.1),
+            "S":float(blend_properties["S"]*100*0.85),
+            "P":float(blend_properties["P"]*100*0.9),
+            "FC":float(100-predictions[6]*100-predictions[7]*100),
+        }
+
+        # logger.info(f"Predicted properties: {predicted_properties}")
+
+        # Create response using the schema
+        response = schemas.PredictionOutput(
+            blend_properties=blend_properties,
+            predicted_coke_properties=predicted_coke_properties,
+            predicted_coal_properties =predicted_coal_properties 
+        )
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error in predict_blend: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred during prediction: {str(e)}"
+        )
+
+@app.get("/verify-token")
+async def verify_token(current_user: models.User = Depends(auth.get_current_user)):
+    return {
+        "user": {
+            "id": current_user.id,
+            "email": current_user.email,
+            "name": current_user.name
+        }
+    }
+
+@app.post("/simulation", response_model=schemas.SimulationResponse)
+async def create_simulation(
+    simulation: schemas.SimulationCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    try:
+        logger.info("Creating new simulation")
+        
+        # Create simulation record with explicit running status
+        db_simulation = models.Simulation(
+            user_id=current_user.id,
+            scenario_name=simulation.scenario_name,
+            scenario_description=simulation.scenario_description,
+            status="running",  # Explicitly set status to running
+            generated_date=datetime.now()
+        )
+        db.add(db_simulation)
+        db.commit()
+        db.refresh(db_simulation)
+
+        logger.info(f"Created simulation with ID: {db_simulation.id} and status: {db_simulation.status}")
+
+        # Save coke properties
+        coke_properties = []
+        for prop in simulation.coke_properties:
+            db_prop = models.SimulationProperties(
+                simulation_id=db_simulation.id,
+                property_type="coke",
+                property_name=prop.property_name,
+                min_value=prop.min_value,
+                max_value=prop.max_value
+            )
+            db.add(db_prop)
+            db.flush()  # Flush to get the ID
+            coke_properties.append({
+                "id": db_prop.id,
+                "simulation_id": db_simulation.id,
+                "property_type": "coke",
+                "property_name": prop.property_name,
+                "min_value": prop.min_value,
+                "max_value": prop.max_value
+            })
+
+        # Save blend properties
+        blend_properties = []
+        for prop in simulation.blend_properties:
+            db_prop = models.SimulationProperties(
+                simulation_id=db_simulation.id,
+                property_type="blend",
+                property_name=prop.property_name,
+                min_value=prop.min_value,
+                max_value=prop.max_value
+            )
+            db.add(db_prop)
+            db.flush()  # Flush to get the ID
+            blend_properties.append({
+                "id": db_prop.id,
+                "simulation_id": db_simulation.id,
+                "property_type": "blend",
+                "property_name": prop.property_name,
+                "min_value": prop.min_value,
+                "max_value": prop.max_value
+            })
+
+        db.commit()
+        logger.info(f"Saved properties for simulation {db_simulation.id}")
+
+        # Create response object with all required fields
+        response_data = {
+            "id": db_simulation.id,
+            "user_id": db_simulation.user_id,
+            "scenario_name": db_simulation.scenario_name,
+            "scenario_description": db_simulation.scenario_description,
+            "status": db_simulation.status,
+            "generated_date": db_simulation.generated_date,
+            "coke_properties": coke_properties,
+            "blend_properties": blend_properties,
+            "recommendations": []  # Empty list for new simulation
+        }
+
+        return response_data
+
+    except Exception as e:
+        logger.error(f"Error creating simulation: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating simulation: {str(e)}"
+        )
+
+@app.post("/simulation/{simulation_id}/stop")
+async def stop_simulation(
+    simulation_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """Stop a running simulation."""
+    try:
+        # Get simulation from database
+        db_simulation = db.query(models.Simulation).filter(models.Simulation.id == simulation_id).first()
+        if not db_simulation:
+            raise HTTPException(status_code=404, detail="Simulation not found")
+            
+        if db_simulation.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized to stop this simulation")
+            
+        if db_simulation.status != "running":
+            raise HTTPException(status_code=400, detail="Simulation is not running")
+            
+        # Set stop flag in running_simulations
+        if simulation_id in running_simulations:
+            running_simulations[simulation_id]["stop_requested"] = True
+            logger.info(f"Stop requested for simulation {simulation_id}")
+            
+            # Update simulation status in database
+            db_simulation.status = "failed"
+            db_simulation.error_message = "Simulation stopped by user"
+            db.commit()
+            
+            # Remove from running simulations
+            running_simulations.pop(simulation_id, None)
+            
+            return {"message": "Stop request received", "status": "failed"}
+        else:
+            # If simulation is not in running_simulations but status is running,
+            # just update the status
+            db_simulation.status = "failed"
+            db_simulation.error_message = "Simulation stopped by user"
+            db.commit()
+            return {"message": "Simulation marked as failed", "status": "failed"}
+            
+    except Exception as e:
+        logger.error(f"Error stopping simulation: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def run_optimization(simulation_id: int, simulation_data: dict, db: Session):
+    try:
+        logger.info(f"Starting optimization process for simulation {simulation_id}")
+        
+        # Initialize simulation tracking
+        running_simulations[simulation_id] = {
+            "stop_requested": False,
+            "start_time": datetime.now()
+        }
+        
+        # Get simulation from database
+        db_simulation = db.query(models.Simulation).filter_by(id=simulation_id).first()
+        if not db_simulation:
+            logger.error(f"Simulation {simulation_id} not found")
+            return
+
+        # Ensure status is running
+        db_simulation.status = "running"
+        db.commit()
+        
+        # Convert constraints to the format expected by the optimizer
+        custom_constraints = {
+            'blend': {},
+            'coke': {}
+        }
+        
+        # Convert blend properties
+        for prop in simulation_data.get('blend_properties', []):
+            custom_constraints['blend'][prop['property_name']] = (
+                float(prop['min_value']),
+                float(prop['max_value'])
+            )
+            
+        # Convert coke properties
+        for prop in simulation_data.get('coke_properties', []):
+            custom_constraints['coke'][prop['property_name']] = (
+                float(prop['min_value']),
+                float(prop['max_value'])
+            )
+            
+        # Get coal data from database
+        coal_data = db.query(models.CoalProperties).all()
+        logger.info(f"Retrieved {len(coal_data)} coal entries from database")
+
+        if not coal_data:
+            raise ValueError("No coal data found in database")
+
+        # Create DataFrame from coal data
+        coal_df = pd.DataFrame([{
+            'Name_of_coal': coal.coal_name,
+            'IM': coal.IM,
+            'Ash': coal.Ash,
+            'VM_weight': coal.VM,
+            'FC': coal.FC,
+            'S': coal.S,
+            'P': coal.P,
+            'SiO2': coal.SiO2,
+            'Al2O3': coal.Al2O3,
+            'Fe2O3': coal.Fe2O3,
+            'CaO': coal.CaO,
+            'MgO': coal.MgO,
+            'Na2O': coal.Na2O,
+            'K2O': coal.K2O,
+            'TiO2': coal.TiO2,
+            'Mn3O4': coal.Mn3O4,
+            'SO3': coal.SO3,
+            'P2O5': coal.P2O5,
+            'BaO': coal.BaO,
+            'SrO': coal.SrO,
+            'ZnO': coal.ZnO,
+            'CRI_weight': coal.CRI,
+            'CSR_weight': coal.CSR,
+            'N': coal.N,
+            'Cost': coal.cost if hasattr(coal, 'cost') else 1000  # Use cost from DB if available
+        } for coal in coal_data])
+
+        logger.info(f"Created DataFrame with shape: {coal_df.shape}")
+        
+        # Initialize optimizer
+        model_path = os.path.join(os.path.dirname(__file__), "Models", "multioutput_rf_model.pkl")
+        optimizer = CoalBlendOptimizer(model_path, coal_df)
+        
+        # Define stop check function
+        def check_stop():
+            if simulation_id not in running_simulations:
+                return True
+            return running_simulations[simulation_id].get("stop_requested", False)
+        
+        # Run optimization
+        result = optimizer.optimize(custom_constraints=custom_constraints, stop_check=check_stop)
+        
+        # Check if optimization was stopped
+        if result is None:
+            logger.info(f"Optimization stopped for simulation {simulation_id}")
+            return
+            
+        # Store all unique blends in simulationCoalRecommendations
+        if isinstance(result, dict) and "all_unique_blends" in result:
+            # Store each unique blend as a separate row
+            for blend in result["all_unique_blends"]:
+                # Initialize coal percentages with zeros for all coals
+                coal_percentages = {
+                    "Metropolitan": 0.0,
+                    "Lake Vermont": 0.0,
+                    "PDN": 0.0,
+                    "Riverside": 0.0,
+                    "Poitrel": 0.0,
+                    "Illawara (PHCC)": 0.0,
+                    "Teck Venture": 0.0,
+                    "Leer": 0.0,
+                    "Daunia (SHCC)": 0.0,
+                    "Mt. Laurel": 0.0,
+                    "Moranbah North": 0.0,
+                    "R.PCI": 0.0,
+                    "Eagle crrek": 0.0,
+                    "Goonyella": 0.0,
+                    "Blue creek": 0.0,
+                    "Scratch Coal": 0.0,
+                    "Dhamra SHCC PDN": 0.0,
+                    "Elga": 0.0,
+                    "Low Ash SHCC/ SHCC-BHP": 0.0,
+                    "Leer/Russian HFCC": 0.0,
+                    "Indonasian": 0.0,
+                    "Uvalnaya": 0.0,
+                    "Caval Ridge": 0.0,
+                    "Amonate": 0.0,
+                    "Aus.SHCC": 0.0,
+                    "Indian Coal Dhanbaad": 0.0
+                }
+                
+                # Update percentages for coals in this blend
+                for coal in blend["coals"]:
+                    coal_percentages[coal["name"]] = coal["percentage"]
+                    
+                
+                
+                    
+                
+                # Create new recommendation entry with predicted values
+                recommendation = models.SimulationCoalRecommendations(
+                    simulation_id=simulation_id,
+                    coal_percentages=coal_percentages,
+                    predicted_ash=blend["predicted"]["ash"],
+                    predicted_vm=blend["predicted"]["vm"],
+                    predicted_fc=blend["predicted"]["fc"],
+                    predicted_csn=blend["predicted"]["csn"],
+                    predicted_cri=blend["predicted"]["cri"],
+                    predicted_csr=blend["predicted"]["csr"],
+                    predicted_ash_final=blend["predicted"]["ash_final"],
+                    predicted_vm_final=blend["predicted"]["vm_final"],
+                    total_cost=blend.get("cost", 0.0)
+                )
+                db.add(recommendation)
+            
+            # Also store the best blend as a separate row
+            best_blend = result["blend_combinations"][0]
+            best_coal_percentages = {
+                "Metropolitan": 0.0,
+                "Lake Vermont": 0.0,
+                "PDN": 0.0,
+                "Riverside": 0.0,
+                "Poitrel": 0.0,
+                "Illawara (PHCC)": 0.0,
+                "Teck Venture": 0.0,
+                "Leer": 0.0,
+                "Daunia (SHCC)": 0.0,
+                "Mt. Laurel": 0.0,
+                "Moranbah North": 0.0,
+                "R.PCI": 0.0,
+                "Eagle crrek": 0.0,
+                "Goonyella": 0.0,
+                "Blue creek": 0.0,
+                "Scratch Coal": 0.0,
+                "Dhamra SHCC PDN": 0.0,
+                "Elga": 0.0,
+                "Low Ash SHCC/ SHCC-BHP": 0.0,
+                "Leer/Russian HFCC": 0.0,
+                "Indonasian": 0.0,
+                "Uvalnaya": 0.0,
+                "Caval Ridge": 0.0,
+                "Amonate": 0.0,
+                "Aus.SHCC": 0.0,
+                "Indian Coal Dhanbaad": 0.0
+            }
+            
+            # Update percentages for coals in best blend
+            for coal in best_blend["coals"]:
+                best_coal_percentages[coal["name"]] = coal["percentage"]
+            
+            best_recommendation = models.SimulationCoalRecommendations(
+                simulation_id=simulation_id,
+                coal_percentages=best_coal_percentages,
+                predicted_ash=best_blend["predicted"]["ash"],
+                predicted_vm=best_blend["predicted"]["vm"],
+                predicted_fc=best_blend["predicted"]["fc"],
+                predicted_csn=best_blend["predicted"]["csn"],
+                predicted_cri=best_blend["predicted"]["cri"],
+                predicted_csr=best_blend["predicted"]["csr"],
+                predicted_ash_final=best_blend["predicted"]["ash_final"],
+                predicted_vm_final=best_blend["predicted"]["vm_final"],
+                total_cost=best_blend.get("cost", 0.0)
+            )
+            db.add(best_recommendation)
+        
+        # Update simulation status
+        db_simulation.status = "completed"
+        db.commit()
+        
+        # Remove from running simulations
+        running_simulations.pop(simulation_id, None)
+        
+    except Exception as e:
+        logger.error(f"Error in optimization process: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Update simulation status to failed
+        db_simulation = db.query(models.Simulation).filter_by(id=simulation_id).first()
+        if db_simulation:
+            db_simulation.status = "failed"
+            db_simulation.error_message = str(e)
+            db.commit()
+            
+        # Remove from running simulations
+        running_simulations.pop(simulation_id, None)
+
+@app.post("/simulation/{simulation_id}/start")
+async def start_optimization(
+    simulation_id: int,
+    simulation_data: dict,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    try:
+        # Start optimization in background
+        asyncio.create_task(run_optimization(simulation_id, simulation_data, db))
+        return {"message": "Optimization started"}
+    except Exception as e:
+        logger.error(f"Error starting optimization: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error starting optimization: {str(e)}"
+        )
+
+# when user login then we have to fetch all the simulation of that user and we have to show that simulations
+@app.get("/simulations", response_model=List[schemas.SimulationResponse])
+async def get_simulations(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    try:
+        # Get all simulations for the current user with their properties
+        simulations = db.query(models.Simulation).filter(
+            models.Simulation.user_id == current_user.id
+        ).order_by(models.Simulation.generated_date.desc()).all()
+        
+        # For each simulation, get its properties and recommendations
+        result = []
+        for simulation in simulations:
+            # Get coke properties
+            coke_properties = db.query(models.SimulationProperties).filter(
+                models.SimulationProperties.simulation_id == simulation.id,
+                models.SimulationProperties.property_type == "coke"
+            ).all()
+            
+            # Get blend properties
+            blend_properties = db.query(models.SimulationProperties).filter(
+                models.SimulationProperties.simulation_id == simulation.id,
+                models.SimulationProperties.property_type == "blend"
+            ).all()
+            
+            # Get recommendations
+            recommendations = db.query(models.SimulationCoalRecommendations).filter(
+                models.SimulationCoalRecommendations.simulation_id == simulation.id
+            ).all()
+            
+            # Process recommendations to match the expected schema
+            processed_recommendations = []
+            for rec in recommendations:
+                # For each coal in the recommendation, create a separate recommendation entry
+                for coal_name, percentage in rec.coal_percentages.items():
+                    if percentage > 0:  # Only include non-zero percentages
+                        processed_rec = {
+                            "id": rec.id,
+                            "simulation_id": rec.simulation_id,
+                            "coal_name": coal_name,
+                            "percentage": percentage,
+                            "predicted_ash": rec.predicted_ash,
+                            "predicted_vm": rec.predicted_vm,
+                            "predicted_fc": rec.predicted_fc,
+                            "predicted_csn": rec.predicted_csn,
+                            "predicted_cri": rec.predicted_cri,
+                            "predicted_csr": rec.predicted_csr,
+                            "predicted_ash_final": rec.predicted_ash_final,
+                            "predicted_vm_final": rec.predicted_vm_final,
+                            "total_cost": rec.total_cost,
+                            "created_at": rec.created_at,
+                            "updated_at": rec.updated_at
+                        }
+                        processed_recommendations.append(processed_rec)
+            
+            # Create a dictionary with all the required fields
+            simulation_dict = {
+                "id": simulation.id,
+                "scenario_name": simulation.scenario_name,
+                "scenario_description": simulation.scenario_description,
+                "generated_date": simulation.generated_date,
+                "status": simulation.status,
+                "user_id": simulation.user_id,
+                "coke_properties": coke_properties,
+                "blend_properties": blend_properties,
+                "recommendations": processed_recommendations
+            }
+            
+            result.append(simulation_dict)
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching simulations: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while fetching simulations: {str(e)}"
+        )
+        
+
+@app.get("/simulation/{simulation_id}", response_model=schemas.SimulationResponse)
+async def get_simulation(
+    simulation_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    try:
+        # Get the simulation
+        simulation = db.query(models.Simulation).filter(
+            models.Simulation.id == simulation_id,
+            models.Simulation.user_id == current_user.id
+        ).first()
+        
+        if not simulation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Simulation with ID {simulation_id} not found"
+            )
+        
+        # Get coke properties
+        coke_properties = db.query(models.SimulationProperties).filter(
+            models.SimulationProperties.simulation_id == simulation.id,
+            models.SimulationProperties.property_type == "coke"
+        ).all()
+        
+        # Get blend properties
+        blend_properties = db.query(models.SimulationProperties).filter(
+            models.SimulationProperties.simulation_id == simulation.id,
+            models.SimulationProperties.property_type == "blend"
+        ).all()
+        
+        # Get recommendations
+        recommendations = db.query(models.SimulationCoalRecommendations).filter(
+            models.SimulationCoalRecommendations.simulation_id == simulation.id
+        ).all()
+        
+        # Process recommendations to match the expected schema and calculate emissions
+        processed_recommendations = []
+        for rec in recommendations:
+            # Calculate emissions for this recommendation blend
+            coal_properties = {}
+            
+            # Get coal properties for all coals in this recommendation
+            for coal_name, percentage in rec.coal_percentages.items():
+                if percentage > 0:  # Only get properties for coals with non-zero percentages
+                    coal = db.query(models.CoalProperties).filter(
+                        models.CoalProperties.coal_name == coal_name
+                    ).first()
+                    
+                    if coal:
+                        coal_properties[coal_name] = coal
+            
+            # Calculate weighted averages for blend properties
+            weighted_blend_properties = {
+                "FC": 0.0,
+                "Ash": 0.0,
+                "VM": 0.0,
+                "S": 0.0,
+                "N": 0.0,
+                "CRI": 0.0,
+                "CSR": 0.0
+            }
+            
+            # Calculate weighted averages
+            for coal_name, percentage in rec.coal_percentages.items():
+                if percentage > 0 and coal_name in coal_properties:
+                    coal = coal_properties[coal_name]
+                    weight = percentage / 100.0  # Convert percentage to decimal
+                    
+                    # Add weighted values
+                    weighted_blend_properties["FC"] += (coal.FC or 0.0) * weight
+                    weighted_blend_properties["Ash"] += (coal.Ash or 0.0) * weight
+                    weighted_blend_properties["VM"] += (coal.VM or 0.0) * weight
+                    weighted_blend_properties["S"] += (coal.S or 0.0) * weight
+                    weighted_blend_properties["N"] += (coal.N or 0.0) * weight
+                    weighted_blend_properties["CRI"] += (coal.CRI or 0.0) * weight
+                    weighted_blend_properties["CSR"] += (coal.CSR or 0.0) * weight
+            
+            # Calculate emissions for this blend
+            emissions = calculate_emissions(
+                fc=weighted_blend_properties["FC"],
+                ash=weighted_blend_properties["Ash"],
+                vm=weighted_blend_properties["VM"],
+                s=weighted_blend_properties["S"],
+                n=weighted_blend_properties["N"],
+                cri=weighted_blend_properties["CRI"],
+                csr=weighted_blend_properties["CSR"]
+            )
+            
+            # Update the recommendation record with calculated emissions
+            rec.CO2_Emissions = emissions.get("CO2_Emissions", 0.0)
+            rec.CO_Emissions = emissions.get("CO_Emissions", 0.0)
+            rec.SO2_Emissions = emissions.get("SO2_Emissions", 0.0)
+            rec.NO_Emissions = emissions.get("NO_Emissions", 0.0)
+            rec.NO2_Emissions = emissions.get("NO2_Emissions", 0.0)
+            rec.PM_index = emissions.get("PM_Index", 0.0)
+            rec.PM10_Emissions = emissions.get("PM10_Emissions", 0.0)
+            rec.PM25_Emissions = emissions.get("PM25_Emissions", 0.0)
+            rec.VOC_index = emissions.get("VOC_Index", 0.0)
+            rec.VOC_Emissions = emissions.get("VOC_Emissions", 0.0)
+            rec.PAH_Emissions = emissions.get("PAH_Emissions", 0.0)
+            
+            # Commit the emission updates to database
+            db.commit()
+            
+            # For each coal in the recommendation, create a separate recommendation entry
+            for coal_name, percentage in rec.coal_percentages.items():
+                if percentage > 0:  # Only include non-zero percentages
+                    processed_rec = {
+                        "id": rec.id,
+                        "simulation_id": rec.simulation_id,
+                        "coal_name": coal_name,
+                        "percentage": percentage,
+                        "predicted_ash": rec.predicted_ash,
+                        "predicted_vm": rec.predicted_vm,
+                        "predicted_fc": rec.predicted_fc,
+                        "predicted_csn": rec.predicted_csn,
+                        "predicted_cri": rec.predicted_cri,
+                        "predicted_csr": rec.predicted_csr,
+                        "predicted_ash_final": rec.predicted_ash_final,
+                        "predicted_vm_final": rec.predicted_vm_final,
+                        "total_cost": rec.total_cost,
+                        "created_at": rec.created_at,
+                        "updated_at": rec.updated_at,
+                        # Add calculated emissions to the response
+                        "CO2_Emissions": rec.CO2_Emissions,
+                        "CO_Emissions": rec.CO_Emissions,
+                        "SO2_Emissions": rec.SO2_Emissions,
+                        "NO_Emissions": rec.NO_Emissions,
+                        "NO2_Emissions": rec.NO2_Emissions,
+                        "PM_index": rec.PM_index,
+                        "PM10_Emissions": rec.PM10_Emissions,
+                        "PM25_Emissions": rec.PM25_Emissions,
+                        "VOC_index": rec.VOC_index,
+                        "VOC_Emissions": rec.VOC_Emissions,
+                        "PAH_Emissions": rec.PAH_Emissions
+                    }
+                    processed_recommendations.append(processed_rec)
+        
+        # Create response dictionary
+        response_dict = {
+            "id": simulation.id,
+            "scenario_name": simulation.scenario_name,
+            "scenario_description": simulation.scenario_description,
+            "generated_date": simulation.generated_date,
+            "status": simulation.status,
+            "user_id": simulation.user_id,
+            "coke_properties": coke_properties,
+            "blend_properties": blend_properties,
+            "recommendations": processed_recommendations
+        }
+        
+        return response_dict
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching simulation: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while fetching simulation: {str(e)}"
+        )
+
+@app.get("/simulations/batch")
+async def get_simulations_batch(
+    simulation_ids: str,  # Comma-separated list of simulation IDs
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Get status of multiple simulations in a single request
+    """
+    try:
+        # Parse the comma-separated list of IDs
+        ids = [int(id_str) for id_str in simulation_ids.split(",") if id_str.strip().isdigit()]
+        
+        if not ids:
+            return []
+            
+        # Query all requested simulations that belong to the current user
+        simulations = (
+            db.query(models.Simulation)
+            .filter(
+                models.Simulation.id.in_(ids),
+                models.Simulation.user_id == current_user.id
+            )
+            .all()
+        )
+        
+        # Format the response
+        result = []
+        for sim in simulations:
+            # Get the latest status update
+            latest_update = (
+                db.query(models.SimulationUpdate)
+                .filter(models.SimulationUpdate.simulation_id == sim.id)
+                .order_by(models.SimulationUpdate.timestamp.desc())
+                .first()
+            )
+            
+            # Prepare the simulation data
+            sim_data = {
+                "id": sim.id,
+                "name": sim.scenario_name,
+                "description": sim.scenario_description,
+                "status": latest_update.status if latest_update else sim.status,
+                "created_at": sim.generated_date.isoformat(),
+                "updated_at": sim.generated_date.isoformat(),  # Using generated_date as updated_at for now
+                "progress": latest_update.progress if latest_update else 0,
+                "message": latest_update.message if latest_update else ""
+            }
+            
+            # Add recommendations if available
+            if sim.status == "completed" and sim.recommendations:
+                sim_data["has_recommendations"] = True
+                
+            result.append(sim_data)
+            
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in get_simulations_batch: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/vendor/coal/upload", response_model=schemas.VendorCoalDataResponse)
+async def upload_vendor_coal_pdf(
+    file: UploadFile = File(None),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+    # Accept all possible coal properties as form fields
+    coal_name: str = Form(None),
+    vendor_name: str = Form(None),
+    vendor_email: str = Form(None),
+    IM: float = Form(None),
+    Ash: float = Form(None),
+    VM: float = Form(None),
+    FC: float = Form(None),
+    S: float = Form(None),
+    P: float = Form(None),
+    SiO2: float = Form(None),
+    Al2O3: float = Form(None),
+    Fe2O3: float = Form(None),
+    CaO: float = Form(None),
+    MgO: float = Form(None),
+    Na2O: float = Form(None),
+    K2O: float = Form(None),
+    TiO2: float = Form(None),
+    Mn3O4: float = Form(None),
+    SO3: float = Form(None),
+    P2O5: float = Form(None),
+    CRI: float = Form(None),
+    CSR: float = Form(None),
+    N: float = Form(None),
+):
+    try:
+        # Create data dictionary from form fields
+        coal_data = {
+            "coal_name": coal_name,
+            "vendor_name": vendor_name,
+            "vendor_email": vendor_email,
+            "IM": IM,
+            "Ash": Ash,
+            "VM": VM,
+            "FC": FC,
+            "S": S,
+            "P": P,
+            "SiO2": SiO2,
+            "Al2O3": Al2O3,
+            "Fe2O3": Fe2O3,
+            "CaO": CaO,
+            "MgO": MgO,
+            "Na2O": Na2O,
+            "K2O": K2O,
+            "TiO2": TiO2,
+            "Mn3O4": Mn3O4,
+            "SO3": SO3,
+            "P2O5": P2O5,
+            "CRI": CRI,
+            "CSR": CSR,
+            "N": N,
+        }
+
+        # If file is provided, parse it and update coal_data
+        if file and file.filename.lower().endswith('.pdf'):
+            try:
+                # Read PDF content
+                contents = await file.read()
+                pdf_file = io.BytesIO(contents)
+                reader = PyPDF2.PdfReader(pdf_file)
+                
+                # Extract text from PDF
+                text = ""
+                for page in reader.pages:
+                    text += page.extract_text() + "\n"
+                
+                # Parse the text and update coal_data with non-None values
+                parsed_data = parse_coal_properties(text)
+                for key, value in parsed_data.items():
+                    if value is not None:
+                        coal_data[key] = value
+                        
+                # If coal_name wasn't provided in form but was in filename
+                if not coal_data.get("coal_name") and file.filename:
+                    coal_data["coal_name"] = file.filename.rsplit('.', 1)[0].strip()
+                    
+            except Exception as e:
+                logger.error(f"Error parsing PDF: {str(e)}")
+                return {
+                    "success": False,
+                    "message": "Error parsing PDF file",
+                    "error": str(e)
+                }
+
+        # Remove None values
+        coal_data = {k: v for k, v in coal_data.items() if v is not None}
+
+        # Validate required fields
+        if not coal_data.get("coal_name"):
+            return {
+                "success": False,
+                "message": "Coal name is required",
+                "error": "Missing coal_name"
+            }
+
+        # Create database record
+        db_coal = models.VendorCoalData(**coal_data)
+        db.add(db_coal)
+        db.commit()
+        db.refresh(db_coal)
+
+        return {
+            "success": True,
+            "message": "Coal data uploaded successfully and is pending approval",
+            "data": db_coal
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error in upload_vendor_coal_pdf: {str(e)}")
+        return {
+            "success": False,
+            "message": "Error processing coal data",
+            "error": str(e)
+        }
+
+
+@app.post("/api/coal/upload", response_model=schemas.CoalPDFUploadResponse)
+async def upload_coal_pdf(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Upload a PDF containing coal properties and extract the data.
+    Expected PDF format: Text-based PDF with key-value pairs like "Ash: 10.5%"
+    """
+    if not file.filename.lower().endswith('.pdf'):
+        return {
+            "success": False,
+            "message": "Invalid file type",
+            "error": "Only PDF files are allowed"
+        }
+    
+    try:
+        # Read the PDF file
+        contents = await file.read()
+        
+        # Extract text from PDF
+        pdf_file = io.BytesIO(contents)
+        reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() + "\n"
+        
+        # Parse the extracted text
+        coal_data = {}
+        
+        # Use the provided coal_name if available, otherwise try to extract from PDF
+        if coal_name:
+            coal_data['coal_name'] = coal_name
+        
+        # Define field mappings with multiple possible variations for each field
+        field_mapping = {
+            'coal_name': ['Coal Name', 'Coal_Name', 'CoalName', 'Coal'],
+            'IM': ['IM', 'Inherent Moisture', 'Moisture'],
+            'Ash': ['Ash', 'Ash Content', 'Ash_Content'],
+            'VM': ['VM', 'Volatile Matter', 'Volatile_Matter', 'Volatile'],
+            'FC': ['FC', 'Fixed Carbon', 'Fixed_Carbon'],
+            'S': ['S', 'Sulfur', 'Sulphur'],
+            'P': ['P', 'Phosphorus'],
+            'SiO2': ['SiO2', 'Silicon Dioxide'],
+            'Al2O3': ['Al2O3', 'Aluminum Oxide', 'Alumina'],
+            'Fe2O3': ['Fe2O3', 'Iron Oxide', 'Ferric Oxide'],
+            'CaO': ['CaO', 'Calcium Oxide', 'Lime'],
+            'MgO': ['MgO', 'Magnesium Oxide', 'Magnesia'],
+            'Na2O': ['Na2O', 'Sodium Oxide'],
+            'K2O': ['K2O', 'Potassium Oxide'],
+            'TiO2': ['TiO2', 'Titanium Dioxide'],
+            'Mn3O4': ['Mn3O4', 'Manganese Oxide'],
+            'SO3': ['SO3', 'Sulfur Trioxide'],
+            'P2O5': ['P2O5', 'Phosphorus Pentoxide'],
+            'BaO': ['BaO', 'Barium Oxide'],
+            'SrO': ['SrO', 'Strontium Oxide'],
+            'ZnO': ['ZnO', 'Zinc Oxide'],
+            'CRI': ['CRI', 'Coke Reactivity Index'],
+            'CSR': ['CSR', 'Coke Strength After Reaction'],
+            'N': ['N', 'Nitrogen', 'Nitrogen Content']
+        }
+        
+        # Create a reverse mapping for easier lookup
+        reverse_mapping = {}
+        for field, aliases in field_mapping.items():
+            for alias in aliases:
+                reverse_mapping[alias.lower()] = field
+        
+        # Process each line in the extracted text
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        
+        for line in lines:
+            # Try different delimiters
+            delimiters = [':', '=']
+            parts = None
+            
+            for delim in delimiters:
+                if delim in line:
+                    parts = [p.strip() for p in line.split(delim, 1)]
+                    if len(parts) == 2:
+                        break
+            
+            if not parts or len(parts) != 2:
+                continue
+                
+            key, value = parts
+            key = key.strip()
+            value = value.strip()
+            
+            # Skip empty values
+            if not value:
+                continue
+                
+            # Remove any percentage signs, units, and extra spaces
+            value = ''.join(c for c in value if c.isdigit() or c in '.-')
+            if not value:
+                continue
+                
+            # Try to convert to float
+            try:
+                num_value = float(value)
+                
+                # Find matching field (case insensitive)
+                key_lower = key.lower()
+                for alias, field in reverse_mapping.items():
+                    if alias in key_lower:
+                        coal_data[field] = num_value
+                        break
+                        
+            except (ValueError, TypeError):
+                # If conversion fails, try to extract numbers from the string
+                import re
+                numbers = re.findall(r'[-+]?\d*\.?\d+', value)
+                if numbers:
+                    try:
+                        num_value = float(numbers[0])
+                        key_lower = key.lower()
+                        for alias, field in reverse_mapping.items():
+                            if alias in key_lower:
+                                coal_data[field] = num_value
+                                break
+                    except (ValueError, TypeError, IndexError):
+                        pass
+        
+        # If we still don't have a coal_name, use the filename without extension
+        if 'coal_name' not in coal_data or not coal_data['coal_name']:
+            coal_data['coal_name'] = file.filename.rsplit('.', 1)[0]
+        
+        # Add vendor information if provided
+        if vendor_name:
+            coal_data['vendor_name'] = vendor_name
+        if vendor_email:
+            coal_data['vendor_email'] = vendor_email
+            
+        # Debug: Print extracted data
+        print("Extracted coal data:", coal_data)
+        
+        # Create new vendor coal data entry
+        db_coal = models.VendorCoalData(**coal_data)
+        db.add(db_coal)
+        db.commit()
+        db.refresh(db_coal)
+        
+        return {
+            "success": True,
+            "message": "Coal data uploaded successfully and pending approval",
+            "data": db_coal
+        }
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error processing vendor coal data: {str(e)}")
+        return {
+            "success": False,
+            "message": "Error processing coal data",
+            "error": str(e)
+        }
+
+
+    """
+    Upload a PDF containing coal properties from a vendor.
+    The data will be stored separately and require admin approval.
+    """
+    print(f"\n=== Starting PDF Upload ===")
+    print(f"Filename: {file.filename}")
+    print(f"Coal name from form: {coal_name}")
+    print(f"Vendor name: {vendor_name}")
+    print(f"Vendor email: {vendor_email}")
+
+    if not file.filename.lower().endswith('.pdf'):
+        return {
+            "success": False,
+            "message": "Invalid file type",
+            "error": "Only PDF files are allowed"
+        }
+    
+    try:
+        # Read the PDF file
+        contents = await file.read()
+        
+        # Extract text from PDF with page numbers
+        pdf_file = io.BytesIO(contents)
+        reader = PyPDF2.PdfReader(pdf_file)
+        full_text = ""
+        print("\n=== Extracted Text from PDF ===")
+        for page_num, page in enumerate(reader.pages, 1):
+            page_text = page.extract_text()
+            full_text += f"\n--- Page {page_num} ---\n{page_text}"
+            print(f"\n--- Page {page_num} (First 200 chars) ---")
+            print(page_text[:200] + ("..." if len(page_text) > 200 else ""))
+        
+        # Initialize data dictionary with form data
+        coal_data = {
+            'coal_name': coal_name or file.filename.rsplit('.', 1)[0],
+            'vendor_name': vendor_name,
+            'vendor_email': vendor_email
+        }
+        
+        # Define field patterns to look for (case insensitive)
+        field_patterns = {
+            'IM': [r'inherent\s+moisture', r'IM', r'moisture'],
+            'Ash': [r'ash'],
+            'VM': [r'volatile\s+matter', r'VM'],
+            'FC': [r'fixed\s+carbon', r'FC'],
+            'S': [r'sulfur', r'sulphur', r'S\s*[:\-]'],
+            'P': [r'phosphorus', r'P\s*[:\-]'],
+            'SiO2': [r'sio2', r'silicon\s+dioxide'],
+            'Al2O3': [r'al2o3', r'aluminum\s+oxide', r'alumina'],
+            'Fe2O3': [r'fe2o3', r'iron\s+oxide'],
+            'CaO': [r'cao', r'calcium\s+oxide'],
+            'MgO': [r'mgo', r'magnesium\s+oxide'],
+            'Na2O': [r'na2o', r'sodium\s+oxide'],
+            'K2O': [r'k2o', r'potassium\s+oxide'],
+            'TiO2': [r'tio2', r'titanium\s+dioxide'],
+            'Mn3O4': [r'mn3o4', r'manganese\s+oxide'],
+            'SO3': [r'so3', r'sulfur\s+trioxide'],
+            'P2O5': [r'p2o5', r'phosphorus\s+pentoxide'],
+            'BaO': [r'bao', r'barium\s+oxide'],
+            'SrO': [r'sro', r'strontium\s+oxide'],
+            'ZnO': [r'zno', r'zinc\s+oxide'],
+            'CRI': [r'cri', r'coke\s+reactivity\s+index'],
+            'CSR': [r'csr', r'coke\s+strength'],
+            'N': [r'nitrogen', r'N\s*[:\-]']
+        }
+        
+        # Try to find values using different patterns
+        print("\n=== Searching for Coal Properties ===")
+        for field, patterns in field_patterns.items():
+            for pattern in patterns:
+                # Look for pattern followed by optional spaces/punctuation and a number
+                match = re.search(
+                    fr'(?i){pattern}\s*[:=\s-]*\s*([\d.]+)', 
+                    full_text,
+                    re.IGNORECASE
+                )
+                if match:
+                    try:
+                        value = float(match.group(1))
+                        coal_data[field] = value
+                        print(f"Found {field}: {value} (matched: {match.group(0)})")
+                        break  # Move to next field after first match
+                    except (ValueError, IndexError):
+                        continue
+        
+        print("\n=== Extracted Coal Data ===")
+        for key, value in coal_data.items():
+            print(f"{key}: {value}")
+
+        # Create database record
+        db_coal = models.VendorCoalData(**coal_data)
+        db.add(db_coal)
+        db.commit()
+        db.refresh(db_coal)
+        
+        print("\n=== Database Record Created ===")
+        print(f"Record ID: {db_coal.id}")
+        print(f"Coal Name: {db_coal.coal_name}")
+        
+        return {
+            "success": True,
+            "message": "Coal data uploaded successfully and is pending approval",
+            "data": db_coal
+        }
+        
+    except Exception as e:
+        db.rollback()
+        error_msg = f"Error processing coal data: {str(e)}"
+        print(f"\n=== ERROR ===")
+        print(error_msg)
+        print("\n=== TRACEBACK ===")
+        import traceback
+        traceback.print_exc()
+        
+        return {
+            "success": False,
+            "message": "Error processing coal data",
+            "error": error_msg
+        }
+
+@app.get("/api/vendor/coal", response_model=List[schemas.VendorCoalData])
+def get_vendor_coal_data(
+    approved: Optional[bool] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Get vendor coal data (admin only)
+    """
+    # TODO: Add admin check
+    query = db.query(models.VendorCoalData)
+    if approved is not None:
+        query = query.filter(models.VendorCoalData.is_approved == approved)
+    return query.offset(skip).limit(limit).all()
+
+@app.patch("/api/vendor/coal/{coal_id}", response_model=schemas.VendorCoalDataResponse)
+def update_vendor_coal_data(
+    coal_id: int,
+    coal_data: schemas.VendorCoalDataUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Update vendor coal data (admin only)
+    """
+    # TODO: Add admin check
+    db_coal = db.query(models.VendorCoalData).filter(models.VendorCoalData.id == coal_id).first()
+    if not db_coal:
+        raise HTTPException(status_code=404, detail="Vendor coal data not found")
+    
+    update_data = coal_data.dict(exclude_unset=True)
+    if 'is_approved' in update_data and update_data['is_approved']:
+        update_data['approved_by'] = current_user.id
+        update_data['approved_date'] = datetime.utcnow()
+    
+    for field, value in update_data.items():
+        setattr(db_coal, field, value)
+    
+    db.commit()
+    db.refresh(db_coal)
+    
+    return {
+        "success": True,
+        "message": "Vendor coal data updated successfully",
+        "data": db_coal
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info("Starting server...")
+    uvicorn.run(app, host="localhost", port=8000, log_level="info")
