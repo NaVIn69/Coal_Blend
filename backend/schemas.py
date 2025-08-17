@@ -49,8 +49,41 @@ class CoalPropertiesBase(BaseModel):
     ZnO: float
     CRI: float
     CSR: float
-    N:float
-    
+    N: float
+    HGI: float
+    Rank: str              # Rank is usually categorical (string like "High", "Medium")
+    Vitrinite: float   # renamed `Vitrinite %` → valid Python identifier
+    Liptinite: float
+    Semi_Fusinite: float
+    CSN_FSI: float
+    Initial_Softening_Temp: float
+    MBI: float
+    CBI: float
+    Log_Max_Fluidity: float
+    coal_category: str      # categorical column
+    C: float
+    H: float
+    O: float
+    ss: float
+    # Vitrinite reflectance values (V7 to V19)
+    V7: Optional[float] = None
+    V8: Optional[float] = None
+    V9: Optional[float] = None
+    V10: Optional[float] = None
+    V11: Optional[float] = None
+    V12: Optional[float] = None
+    V13: Optional[float] = None
+    V14: Optional[float] = None
+    V15: Optional[float] = None
+    V16: Optional[float] = None
+    V17: Optional[float] = None
+    V18: Optional[float] = None
+    V19: Optional[float] = None
+    # Additional properties for CBI and Log Max Fluidity calculations
+    Inertinite: Optional[float] = None
+    Minerals: Optional[float] = None
+    MaxFluidity: Optional[float] = None
+
 
 class CoalPropertiesCreate(CoalPropertiesBase):
     pass
@@ -70,9 +103,9 @@ class PredictionInput(BaseModel):
 
 class PredictionOutput(BaseModel):
     blend_properties: Dict[str, float]
-    predicted_coal_properties: Dict[str, float] 
-    predicted_coke_properties:Dict[str, float] 
- 
+    predicted_coal_properties: Dict[str, float]
+    predicted_coke_properties: Dict[str, float]
+
 class SimulationPropertiesBase(BaseModel):
     property_type: str  # 'coke' or 'blend'
     property_name: str
@@ -181,6 +214,24 @@ class VendorCoalDataBase(BaseModel):
     CRI: Optional[float] = None
     CSR: Optional[float] = None
     N: Optional[float] = None
+    # Vitrinite reflectance values (V7 to V19)
+    V7: Optional[float] = None
+    V8: Optional[float] = None
+    V9: Optional[float] = None
+    V10: Optional[float] = None
+    V11: Optional[float] = None
+    V12: Optional[float] = None
+    V13: Optional[float] = None
+    V14: Optional[float] = None
+    V15: Optional[float] = None
+    V16: Optional[float] = None
+    V17: Optional[float] = None
+    V18: Optional[float] = None
+    V19: Optional[float] = None
+    # Additional properties for CBI and Log Max Fluidity calculations
+    Inertinite: Optional[float] = None
+    Minerals: Optional[float] = None
+    Max_Fluidity_ddpm: Optional[float] = None
     vendor_name: Optional[str] = None
     vendor_email: Optional[EmailStr] = None
     notes: Optional[str] = None

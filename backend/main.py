@@ -25,6 +25,7 @@ import models
 import schemas
 import auth
 from database import engine, get_db
+from inference_engine import CoalBlendInferenceEngine
 
 load_dotenv()
 
@@ -89,6 +90,19 @@ def load_models():
 
 # Load model at startup
 prediction_model = load_models()
+
+# Initialize inference engine
+def load_inference_engine():
+    models_dir = os.path.join(os.path.dirname(__file__), "Models")
+    try:
+        inference_engine = CoalBlendInferenceEngine(models_dir)
+        return inference_engine
+    except Exception as e:
+        logger.error(f"Error loading inference engine: {str(e)}")
+        raise
+
+# Load inference engine at startup
+inference_engine = load_inference_engine()
 
 # Add a global dictionary to track running simulations
 running_simulations = {}
@@ -196,9 +210,43 @@ def parse_coal_properties(text: str) -> dict:
         "Mn3O4": extract_number(r'Mn3O4', text),
         "SO3": extract_number(r'SO3', text),
         "P2O5": extract_number(r'P2O5', text),
+        "BaO": extract_number(r'BaO', text),
+        "SrO": extract_number(r'SrO', text),
+        "ZnO": extract_number(r'ZnO', text),
         "CRI": extract_number(r'CRI', text),
         "CSR": extract_number(r'CSR', text),
         "N": extract_number(r'(?:Nitrogen|N)', text),
+        "HGI": extract_number(r'HGI', text),
+        "Vitrinite": extract_number(r'Vitrinite', text),
+        "Liptinite": extract_number(r'Liptinite', text),
+        "Semi_Fusinite": extract_number(r'Semi_Fusinite', text),
+        "CSN_FSI": extract_number(r'CSN_FSI', text),
+        "Initial_Softening_Temp": extract_number(r'Initial_Softening_Temp', text),
+        "MBI": extract_number(r'MBI', text),
+        "CBI": extract_number(r'CBI', text),
+        "Log_Max_Fluidity": extract_number(r'Log_Max_Fluidity', text),
+        "C": extract_number(r'C', text),
+        "H": extract_number(r'H', text),
+        "O": extract_number(r'O', text),
+        "ss": extract_number(r'ss', text),
+        # Vitrinite reflectance values (V7 to V19)
+        "V7": extract_number(r'V7', text),
+        "V8": extract_number(r'V8', text),
+        "V9": extract_number(r'V9', text),
+        "V10": extract_number(r'V10', text),
+        "V11": extract_number(r'V11', text),
+        "V12": extract_number(r'V12', text),
+        "V13": extract_number(r'V13', text),
+        "V14": extract_number(r'V14', text),
+        "V15": extract_number(r'V15', text),
+        "V16": extract_number(r'V16', text),
+        "V17": extract_number(r'V17', text),
+        "V18": extract_number(r'V18', text),
+        "V19": extract_number(r'V19', text),
+        # Additional properties for CBI and Log Max Fluidity calculations
+        "Inertinite": extract_number(r'Inertinite', text),
+        "Minerals": extract_number(r'Minerals', text),
+        "Max_Fluidity_ddpm": extract_number(r'Max_Fluidity_ddpm', text),
     }
     
     # Remove None values
@@ -376,146 +424,62 @@ async def predict_blend(
             logger.info(f"CRI: {coal.CRI}")
             logger.info(f"CSR: {coal.CSR}")
             logger.info(f"N:{coal.N}")
+            logger.info(f"HGI: {coal.HGI}")
+            logger.info(f"Coal Category: {coal.coal_category}")
 
-        # Calculate weighted averages for blend properties
-        blend_properties = {
-            "IM": 0.0,
-            "Ash": 0.0,
-            "VM_weight": 0.0,
-            "FC": 0.0,
-            "S": 0.0,
-            "P": 0.0,
-            "SiO2": 0.0,
-            "Al2O3": 0.0,
-            "Fe2O3": 0.0,
-            "CaO": 0.0,
-            "MgO": 0.0,
-            "Na2O": 0.0,
-            "K2O": 0.0,
-            "TiO2": 0.0,
-            "Mn3O4": 0.0,
-            "SO3": 0.0,
-            "P2O5": 0.0,
-            "BaO": 0.0,
-            "SrO": 0.0,
-            "ZnO": 0.0,
-            "CRI_weight": 0.0,
-            "CSR_weight": 0.0,
-            "N":0.0
-        }
-
-        # Map database column names to model input format
-        property_mapping = {
-            "IM": "IM",
-            "Ash": "Ash",
-            "VM_weight": "VM",
-            "FC": "FC",
-            "S": "S",
-            "P": "P",
-            "SiO2": "SiO2",
-            "Al2O3": "Al2O3",
-            "Fe2O3": "Fe2O3",
-            "CaO": "CaO",
-            "MgO": "MgO",
-            "Na2O": "Na2O",
-            "K2O": "K2O",
-            "TiO2": "TiO2",
-            "Mn3O4": "Mn3O4",
-            "SO3": "SO3",
-            "P2O5": "P2O5",
-            "BaO": "BaO",
-            "SrO": "SrO",
-            "ZnO": "ZnO",
-            "CRI_weight": "CRI",
-            "CSR_weight": "CSR",
-            "N":"N"
-        }
-
-        logger.info("\nCalculating weighted averages for blend properties:")
-        for blend in prediction_input.blends:
-            coal = coal_properties[blend.coal_name]
-            weight = blend.percentage / 100.0  # Convert percentage to decimal
-            
-            logger.info(f"\nCoal: {blend.coal_name} (Weight: {weight})")
-            
-            # Calculate weighted averages using the mapping
-            for model_property, db_column in property_mapping.items():
-                value = getattr(coal, db_column)
-                # Convert None to 0.0
-                if value is None:
-                    value = 0.0
-                weighted_value = value * weight
-                blend_properties[model_property] += weighted_value
-                logger.info(f"{model_property}: {value} * {weight} = {weighted_value}")
-
-        logger.info("\nFinal weighted averages for blend properties:")
-        for property_name, value in blend_properties.items():
-            logger.info(f"{property_name}: {value:.4f}")
-
-        logger.info(f"\nCalculated blend properties: {blend_properties}")
-
-        # Prepare input for model in the correct order
-        model_input = np.array([[
-            blend_properties["IM"],
-            blend_properties["Ash"],
-            blend_properties["VM_weight"],
-            blend_properties["FC"],
-            blend_properties["S"],
-            blend_properties["P"],
-            blend_properties["SiO2"],
-            blend_properties["Al2O3"],
-            blend_properties["Fe2O3"],
-            blend_properties["CaO"],
-            blend_properties["MgO"],
-            blend_properties["Na2O"],
-            blend_properties["K2O"],
-            blend_properties["TiO2"],
-            blend_properties["Mn3O4"],
-            blend_properties["SO3"],
-            blend_properties["P2O5"],
-            blend_properties["BaO"],
-            blend_properties["SrO"],
-            blend_properties["ZnO"],
-            blend_properties["CRI_weight"],
-            blend_properties["CSR_weight"],
-            
-        ]])
-
-        logger.info(f"Model input shape: {model_input.shape}")
-        logger.info(f"Model input: {model_input}")
-
-        # Get predictions from the model
-        predictions = prediction_model.predict(model_input)[0]
+        # ========================================
+        # Use the inference engine for complete prediction
+        # ========================================
+        logger.info("\n=== Using Inference Engine for Complete Prediction ===")
+    
         
-        # Model outputs 8 values in this order:
-        # [%ash, %vm, %fc, %CSN, CRI, CSR, ASH, VM]
+        # Convert blend input to the format expected by inference engine
+        blend_ratios = [{"coal_name": blend.coal_name, "percentage": blend.percentage} 
+                       for blend in prediction_input.blends]
+        
+        # Run complete inference pipeline
+        inference_results = inference_engine.run_inference(coal_properties, blend_ratios)
+        
+        # Extract results
+        # enhanced_blend_properties = inference_results["final_features"]
+        # predicted_targets = inference_results["predicted_targets"]
+        # emissions = inference_results["emissions"]
+        enhanced_blend_properties = inference_results["final_features"]
+        predicted_targets = inference_results["predicted_targets"]
+        emissions = inference_results["emissions"]
+        
+        # Format predictions for response
         predicted_coal_properties = {
-            "ash_percent": float(predictions[0]),
-            "vm_percent": float(predictions[1]),
-            "fc_percent": float(predictions[2]),
-            "CSN": float(predictions[3])       
+            "ash_percent": predicted_targets.get("ASH", 0.0),
+            "vm_percent": predicted_targets.get("VM", 0.0),
+            "fc_percent": 100 - predicted_targets.get("ASH", 0.0) - predicted_targets.get("VM", 0.0),
+            "CSN": 0.0  # Not predicted in current model
         }
-        predicted_coke_properties={
-            "CRI": float(predictions[4]*100),
-            "CSR": float(predictions[5]*100),
-            "ASH": float(predictions[6]*100),
-            "VM": float(predictions[7]*100),
-            "N":float(blend_properties["N"]*100*0.1),
-            "S":float(blend_properties["S"]*100*0.85),
-            "P":float(blend_properties["P"]*100*0.9),
-            "FC":float(100-predictions[6]*100-predictions[7]*100),
+        
+        predicted_coke_properties = {
+            "CRI": predicted_targets.get("CRI", 0.0),
+            "CSR": predicted_targets.get("CSR", 0.0),
+            "ASH": predicted_targets.get("ASH", 0.0),
+            "VM": predicted_targets.get("VM", 0.0),
+            "N": enhanced_blend_properties.get("weighted_N", 0.0) * 100 * 0.1,
+            "S": enhanced_blend_properties.get("weighted_S", 0.0) * 100 * 0.85,
+            "P": enhanced_blend_properties.get("weighted_P", 0.0) * 100 * 0.9,
+            "FC": 100 - predicted_targets.get("ASH", 0.0) - predicted_targets.get("VM", 0.0),
         }
-
-        # logger.info(f"Predicted properties: {predicted_properties}")
+        
+        # logger.info("=== Inference Engine Prediction completed successfully ===")
+        # logger.info(f"Predicted targets: {predicted_targets}")
+        # logger.info(f"Emissions: {emissions}")
 
         # Create response using the schema
         response = schemas.PredictionOutput(
-            blend_properties=blend_properties,
+            blend_properties=enhanced_blend_properties,
             predicted_coke_properties=predicted_coke_properties,
-            predicted_coal_properties =predicted_coal_properties 
+            predicted_coal_properties=predicted_coal_properties
         )
         
         return response
+        
     except Exception as e:
         logger.error(f"Error in predict_blend: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -1033,6 +997,8 @@ async def get_simulation(
         # Process recommendations to match the expected schema and calculate emissions
         processed_recommendations = []
         for rec in recommendations:
+            logger.info(f"\n=== Processing recommendation id={rec.id} for simulation id={simulation.id} ===")
+            logger.info(f"Coal percentages: {rec.coal_percentages}")
             # Calculate emissions for this recommendation blend
             coal_properties = {}
             
@@ -1045,6 +1011,10 @@ async def get_simulation(
                     
                     if coal:
                         coal_properties[coal_name] = coal
+                        logger.info(
+                            f"Loaded properties for coal '{coal_name}' (percentage={percentage}%): "
+                            f"FC={coal.FC}, Ash={coal.Ash}, VM={coal.VM}, S={coal.S}, N={coal.N}, CRI={coal.CRI}, CSR={coal.CSR}"
+                        )
             
             # Calculate weighted averages for blend properties
             weighted_blend_properties = {
@@ -1063,7 +1033,13 @@ async def get_simulation(
                     coal = coal_properties[coal_name]
                     weight = percentage / 100.0  # Convert percentage to decimal
                     
-                    # Add weighted values
+                    logger.info(
+                        f"Contribution from '{coal_name}' (weight={weight:.4f}): "
+                        f"FC={(coal.FC or 0.0) * weight:.4f}, Ash={(coal.Ash or 0.0) * weight:.4f}, "
+                        f"VM={(coal.VM or 0.0) * weight:.4f}, S={(coal.S or 0.0) * weight:.4f}, "
+                        f"N={(coal.N or 0.0) * weight:.4f}, CRI={(coal.CRI or 0.0) * weight:.4f}, CSR={(coal.CSR or 0.0) * weight:.4f}"
+                    )
+                    # Add weighted values 
                     weighted_blend_properties["FC"] += (coal.FC or 0.0) * weight
                     weighted_blend_properties["Ash"] += (coal.Ash or 0.0) * weight
                     weighted_blend_properties["VM"] += (coal.VM or 0.0) * weight
@@ -1071,8 +1047,29 @@ async def get_simulation(
                     weighted_blend_properties["N"] += (coal.N or 0.0) * weight
                     weighted_blend_properties["CRI"] += (coal.CRI or 0.0) * weight
                     weighted_blend_properties["CSR"] += (coal.CSR or 0.0) * weight
+
+            logger.info(
+                "Final weighted blend properties: "
+                f"FC={weighted_blend_properties['FC']:.4f}, "
+                f"Ash={weighted_blend_properties['Ash']:.4f}, "
+                f"VM={weighted_blend_properties['VM']:.4f}, "
+                f"S={weighted_blend_properties['S']:.4f}, "
+                f"N={weighted_blend_properties['N']:.4f}, "
+                f"CRI={weighted_blend_properties['CRI']:.4f}, "
+                f"CSR={weighted_blend_properties['CSR']:.4f}"
+            )
             
             # Calculate emissions for this blend
+            logger.info(
+                "Calculating emissions with inputs: "
+                f"FC={weighted_blend_properties['FC']:.4f}, "
+                f"Ash={weighted_blend_properties['Ash']:.4f}, "
+                f"VM={weighted_blend_properties['VM']:.4f}, "
+                f"S={weighted_blend_properties['S']:.4f}, "
+                f"N={weighted_blend_properties['N']:.4f}, "
+                f"CRI={weighted_blend_properties['CRI']:.4f}, "
+                f"CSR={weighted_blend_properties['CSR']:.4f}"
+            )
             emissions = calculate_emissions(
                 fc=weighted_blend_properties["FC"],
                 ash=weighted_blend_properties["Ash"],
@@ -1081,6 +1078,20 @@ async def get_simulation(
                 n=weighted_blend_properties["N"],
                 cri=weighted_blend_properties["CRI"],
                 csr=weighted_blend_properties["CSR"]
+            )
+            logger.info(
+                "Emissions calculated: "
+                f"CO2={emissions.get('CO2_Emissions', 0.0):.4f}, "
+                f"CO={emissions.get('CO_Emissions', 0.0):.4f}, "
+                f"SO2={emissions.get('SO2_Emissions', 0.0):.4f}, "
+                f"NO={emissions.get('NO_Emissions', 0.0):.4f}, "
+                f"NO2={emissions.get('NO2_Emissions', 0.0):.4f}, "
+                f"PM_Index={emissions.get('PM_Index', 0.0):.6f}, "
+                f"PM10={emissions.get('PM10_Emissions', 0.0):.6f}, "
+                f"PM25={emissions.get('PM25_Emissions', 0.0):.6f}, "
+                f"VOC_Index={emissions.get('VOC_Index', 0.0):.6f}, "
+                f"VOC={emissions.get('VOC_Emissions', 0.0):.6f}, "
+                f"PAH={emissions.get('PAH_Emissions', 0.0):.6f}"
             )
             
             # Update the recommendation record with calculated emissions
@@ -1097,6 +1108,7 @@ async def get_simulation(
             rec.PAH_Emissions = emissions.get("PAH_Emissions", 0.0)
             
             # Commit the emission updates to database
+            logger.info("Persisting calculated emissions back to the database for this recommendation")
             db.commit()
             
             # For each coal in the recommendation, create a separate recommendation entry
@@ -1399,7 +1411,38 @@ async def upload_coal_pdf(
             'ZnO': ['ZnO', 'Zinc Oxide'],
             'CRI': ['CRI', 'Coke Reactivity Index'],
             'CSR': ['CSR', 'Coke Strength After Reaction'],
-            'N': ['N', 'Nitrogen', 'Nitrogen Content']
+            'N': ['N', 'Nitrogen', 'Nitrogen Content'],
+            'HGI': ['HGI', 'Hardgrove Grindability Index'],
+            'Vitrinite': ['Vitrinite'],
+            'Liptinite': ['Liptinite'],
+            'Semi_Fusinite': ['Semi_Fusinite'],
+            'CSN_FSI': ['CSN_FSI'],
+            'Initial_Softening_Temp': ['Initial_Softening_Temp'],
+            'MBI': ['MBI'],
+            'CBI': ['CBI'],
+            'Log_Max_Fluidity': ['Log_Max_Fluidity'],
+            'C': ['C', 'Carbon'],
+            'H': ['H', 'Hydrogen'],
+            'O': ['O', 'Oxygen'],
+            'ss': ['ss'],
+            # Vitrinite reflectance values (V7 to V19)
+            'V7': ['V7'],
+            'V8': ['V8'],
+            'V9': ['V9'],
+            'V10': ['V10'],
+            'V11': ['V11'],
+            'V12': ['V12'],
+            'V13': ['V13'],
+            'V14': ['V14'],
+            'V15': ['V15'],
+            'V16': ['V16'],
+            'V17': ['V17'],
+            'V18': ['V18'],
+            'V19': ['V19'],
+            # Additional properties for CBI and Log Max Fluidity calculations
+            'Inertinite': ['Inertinite'],
+            'Minerals': ['Minerals'],
+            'Max_Fluidity_ddpm': ['Max_Fluidity_ddpm', 'Max Fluidity ddpm']
         }
         
         # Create a reverse mapping for easier lookup
