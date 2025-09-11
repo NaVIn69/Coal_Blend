@@ -1668,7 +1668,7 @@ def get_vendor_coal_data(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    # current_user: models.User = Depends(auth.get_current_user)
 ):
     """
     Get vendor coal data (admin only)
@@ -1677,7 +1677,7 @@ def get_vendor_coal_data(
     query = db.query(models.VendorCoalData)
     if approved is not None:
         query = query.filter(models.VendorCoalData.is_approved == approved)
-    return query.offset(skip).limit(limit).all()
+    return query.all()
 
 @app.patch("/api/vendor/coal/{coal_id}", response_model=schemas.VendorCoalDataResponse)
 def update_vendor_coal_data(

@@ -205,7 +205,7 @@ class SimulationUpdate(Base):
     message = Column(Text)  # Optional status message
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
-class VendorCoalData(Base):
+class VendorCoalData(Base):  
     """Stores coal data uploaded by vendors"""
     __tablename__ = "vendor_coal_data"
     
