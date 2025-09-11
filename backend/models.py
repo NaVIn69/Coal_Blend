@@ -208,9 +208,9 @@ class SimulationUpdate(Base):
 class VendorCoalData(Base):  
     """Stores coal data uploaded by vendors"""
     __tablename__ = "vendor_coal_data"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    coal_name = Column(String, index=True, nullable=False)
+   
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    coal_name = Column(String(100))
     IM = Column(Float)
     Ash = Column(Float)
     VM = Column(Float)
@@ -234,6 +234,21 @@ class VendorCoalData(Base):
     CRI = Column(Float)
     CSR = Column(Float)
     N = Column(Float)
+    HGI = Column(Float)
+    Rank = Column(String(50))
+    Vitrinite = Column(Float)
+    Liptinite = Column(Float)
+    Semi_Fusinite = Column(Float)
+    CSN_FSI = Column(Float)
+    Initial_Softening_Temp = Column(Float)
+    MBI = Column(Float)
+    CBI = Column(Float)
+    Log_Max_Fluidity = Column(Float)
+    coal_category = Column(String(50))
+    C = Column(Float)
+    H = Column(Float)
+    O = Column(Float)
+    ss = Column(Float)
     # Vitrinite reflectance values (V7 to V19)
     V7 = Column(Float)
     V8 = Column(Float)
@@ -251,11 +266,7 @@ class VendorCoalData(Base):
     # Additional properties for CBI and Log Max Fluidity calculations
     Inertinite = Column(Float)
     Minerals = Column(Float)
-    Max_Fluidity_ddpm = Column(Float)
-    vendor_name = Column(String, nullable=True)
-    vendor_email = Column(String, nullable=True)
-    upload_date = Column(DateTime, default=datetime.datetime.utcnow)
-    is_approved = Column(Boolean, default=False)
-    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
-    approved_date = Column(DateTime, nullable=True)
-    notes = Column(Text, nullable=True)
+    MaxFluidity = Column(Float)
+    is_approved = Column(Boolean, default=False)  # Approval status
+    uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
+    

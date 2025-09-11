@@ -278,3 +278,184 @@ class CoalPDFUploadResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+# Schema for updates (only optional fields)
+class VendorCoalUpdate(BaseModel):
+    coal_name: Optional[str] = None
+    IM: Optional[float] = None
+    Ash: Optional[float] = None
+    VM: Optional[float] = None
+    FC: Optional[float] = None
+    S: Optional[float] = None
+    P: Optional[float] = None
+    SiO2: Optional[float] = None
+    Al2O3: Optional[float] = None
+    Fe2O3: Optional[float] = None
+    CaO: Optional[float] = None
+    MgO: Optional[float] = None
+    Na2O: Optional[float] = None
+    K2O: Optional[float] = None
+    TiO2: Optional[float] = None
+    Mn3O4: Optional[float] = None
+    SO3: Optional[float] = None
+    P2O5: Optional[float] = None
+    BaO: Optional[float] = None
+    SrO: Optional[float] = None
+    ZnO: Optional[float] = None
+    CRI: Optional[float] = None
+    CSR: Optional[float] = None
+    N: Optional[float] = None
+    HGI: Optional[float] = None
+    Rank: Optional[str] = None
+    Vitrinite: Optional[float] = None
+    Liptinite: Optional[float] = None
+    Semi_Fusinite: Optional[float] = None
+    CSN_FSI: Optional[float] = None
+    Initial_Softening_Temp: Optional[float] = None
+    MBI: Optional[float] = None
+    CBI: Optional[float] = None
+    Log_Max_Fluidity: Optional[float] = None
+    coal_category: Optional[str] = None
+    C: Optional[float] = None
+    H: Optional[float] = None
+    O: Optional[float] = None
+    ss: Optional[float] = None
+    V7: Optional[float] = None
+    V8: Optional[float] = None
+    V9: Optional[float] = None
+    V10: Optional[float] = None
+    V11: Optional[float] = None
+    V12: Optional[float] = None
+    V13: Optional[float] = None
+    V14: Optional[float] = None
+    V15: Optional[float] = None
+    V16: Optional[float] = None
+    V17: Optional[float] = None 
+    V18: Optional[float] = None
+    V19: Optional[float] = None
+    Inertinite: Optional[float] = None
+    Minerals: Optional[float] = None
+    MaxFluidity: Optional[float] = None
+        
+# schemas.py
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+
+class VendorCoalDataCreate(BaseModel):
+    coal_name: str
+    IM: Optional[float] = None
+    Ash: Optional[float] = None
+    VM: Optional[float] = None
+    FC: Optional[float] = None
+    S: Optional[float] = None
+    P: Optional[float] = None
+    SiO2: Optional[float] = None
+    Al2O3: Optional[float] = None
+    Fe2O3: Optional[float] = None
+    CaO: Optional[float] = None
+    MgO: Optional[float] = None
+    Na2O: Optional[float] = None
+    K2O: Optional[float] = None
+    TiO2: Optional[float] = None
+    Mn3O4: Optional[float] = None
+    SO3: Optional[float] = None
+    P2O5: Optional[float] = None
+    BaO: Optional[float] = None
+    SrO: Optional[float] = None
+    ZnO: Optional[float] = None
+    CRI: Optional[float] = None
+    CSR: Optional[float] = None
+    N: Optional[float] = None
+    HGI: Optional[float] = None
+    Rank: Optional[str] = None
+    Vitrinite: Optional[float] = None
+    Liptinite: Optional[float] = None
+    Semi_Fusinite: Optional[float] = None
+    CSN_FSI: Optional[float] = None
+    Initial_Softening_Temp: Optional[float] = None
+    MBI: Optional[float] = None
+    CBI: Optional[float] = None
+    Log_Max_Fluidity: Optional[float] = None
+    coal_category: Optional[str] = None
+    C: Optional[float] = None
+    H: Optional[float] = None
+    O: Optional[float] = None
+    ss: Optional[float] = None
+    V7: Optional[float] = None
+    V8: Optional[float] = None
+    V9: Optional[float] = None
+    V10: Optional[float] = None
+    V11: Optional[float] = None
+    V12: Optional[float] = None
+    V13: Optional[float] = None
+    V14: Optional[float] = None
+    V15: Optional[float] = None
+    V16: Optional[float] = None
+    V17: Optional[float] = None
+    V18: Optional[float] = None
+    V19: Optional[float] = None
+    Inertinite: Optional[float] = None
+    Minerals: Optional[float] = None
+    MaxFluidity: Optional[float] = None
+
+    class Config:
+        orm_mode = True
+
+
+class VendorCoalDataSchema(BaseModel):
+    coal_name: str
+    IM: Optional[float] = None
+    Ash: Optional[float] = None
+    VM: Optional[float] = None
+    FC: Optional[float] = None
+    S: Optional[float] = None
+    P: Optional[float] = None
+    SiO2: Optional[float] = None
+    Al2O3: Optional[float] = None
+    Fe2O3: Optional[float] = None
+    CaO: Optional[float] = None
+    MgO: Optional[float] = None
+    Na2O: Optional[float] = None
+    K2O: Optional[float] = None
+    TiO2: Optional[float] = None
+    Mn3O4: Optional[float] = None
+    SO3: Optional[float] = None
+    P2O5: Optional[float] = None
+    BaO: Optional[float] = None
+    SrO: Optional[float] = None
+    ZnO: Optional[float] = None
+    CRI: Optional[float] = None
+    CSR: Optional[float] = None
+    N: Optional[float] = None
+    HGI: Optional[float] = None
+    Rank: Optional[str] = None
+    Vitrinite: Optional[float] = None
+    Liptinite: Optional[float] = None
+    Semi_Fusinite: Optional[float] = None
+    CSN_FSI: Optional[float] = None
+    Initial_Softening_Temp: Optional[float] = None
+    MBI: Optional[float] = None
+    CBI: Optional[float] = None
+    Log_Max_Fluidity: Optional[float] = None
+    coal_category: Optional[str] = None
+    C: Optional[float] = None
+    H: Optional[float] = None
+    O: Optional[float] = None
+    ss: Optional[float] = None
+    V7: Optional[float] = None
+    V8: Optional[float] = None
+    V9: Optional[float] = None
+    V10: Optional[float] = None
+    V11: Optional[float] = None
+    V12: Optional[float] = None
+    V13: Optional[float] = None
+    V14: Optional[float] = None
+    V15: Optional[float] = None
+    V16: Optional[float] = None
+    V17: Optional[float] = None
+    V18: Optional[float] = None
+    V19: Optional[float] = None
+    Inertinite: Optional[float] = None
+    Minerals: Optional[float] = None
+    MaxFluidity: Optional[float] = None
