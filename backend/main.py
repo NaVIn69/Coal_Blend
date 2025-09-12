@@ -1333,7 +1333,7 @@ async def upload_coal_pdf(
         return {
             "success": True,
             "message": "Coal PDF processed and stored successfully",
-            "data": validated.dict()
+            "coal_data": validated.model_dump()
         }
 
     except json.JSONDecodeError:

@@ -15,13 +15,15 @@ import axios from "axios";
 const COAL_PROPERTIES = [
   { id: "coal_name", label: "Coal Name", type: "text", required: true },
 
-  // Coal Properties
+  // Proximate & Ultimate Analysis
   { id: "IM", label: "IM %", type: "number", step: "0.01" },
   { id: "Ash", label: "Ash %", type: "number", step: "0.01" },
   { id: "VM", label: "Volatile Matter %", type: "number", step: "0.01" },
   { id: "FC", label: "Fixed Carbon %", type: "number", step: "0.01" },
   { id: "S", label: "Sulfur %", type: "number", step: "0.01" },
   { id: "P", label: "Phosphorus %", type: "number", step: "0.01" },
+
+  // Oxides
   { id: "SiO2", label: "SiO2 %", type: "number", step: "0.01" },
   { id: "Al2O3", label: "Al2O3 %", type: "number", step: "0.01" },
   { id: "Fe2O3", label: "Fe2O3 %", type: "number", step: "0.01" },
@@ -33,11 +35,71 @@ const COAL_PROPERTIES = [
   { id: "Mn3O4", label: "Mn3O4 %", type: "number", step: "0.01" },
   { id: "SO3", label: "SO3 %", type: "number", step: "0.01" },
   { id: "P2O5", label: "P2O5 %", type: "number", step: "0.01" },
+  { id: "BaO", label: "BaO %", type: "number", step: "0.01" },
+  { id: "SrO", label: "SrO %", type: "number", step: "0.01" },
+  { id: "ZnO", label: "ZnO %", type: "number", step: "0.01" },
+
+  // Coke Properties
   { id: "CRI", label: "CRI", type: "number", step: "0.01" },
   { id: "CSR", label: "CSR", type: "number", step: "0.01" },
-  { id: "N", label: "Nitrogen %", type: "number", step: "0.01" },
-];
+  { id: "HGI", label: "HGI", type: "number", step: "0.01" },
 
+  // Elemental
+  { id: "N", label: "Nitrogen %", type: "number", step: "0.01" },
+  { id: "C", label: "Carbon %", type: "number", step: "0.01" },
+  { id: "H", label: "Hydrogen %", type: "number", step: "0.01" },
+  { id: "O", label: "Oxygen %", type: "number", step: "0.01" },
+
+  // Rank and Categories
+  { id: "Rank", label: "Rank", type: "text" },
+  { id: "coal_category", label: "Coal Category", type: "text" },
+
+  // Petrography
+  { id: "Vitrinite", label: "Vitrinite %", type: "number", step: "0.01" },
+  { id: "Liptinite", label: "Liptinite %", type: "number", step: "0.01" },
+  {
+    id: "Semi_Fusinite",
+    label: "Semi Fusinite %",
+    type: "number",
+    step: "0.01",
+  },
+  { id: "Inertinite", label: "Inertinite %", type: "number", step: "0.01" },
+  { id: "Minerals", label: "Minerals %", type: "number", step: "0.01" },
+
+  // Coking Indices
+  { id: "CSN_FSI", label: "CSN/FSI", type: "number", step: "0.01" },
+  {
+    id: "Initial_Softening_Temp",
+    label: "Initial Softening Temp (°C)",
+    type: "number",
+    step: "0.01",
+  },
+  { id: "MBI", label: "MBI", type: "number", step: "0.01" },
+  { id: "CBI", label: "CBI", type: "number", step: "0.01" },
+  {
+    id: "Log_Max_Fluidity",
+    label: "Log Max Fluidity",
+    type: "number",
+    step: "0.01",
+  },
+  { id: "MaxFluidity", label: "Max Fluidity", type: "number", step: "0.01" },
+
+  // Extra Variables V7–V19
+  { id: "ss", label: "ss", type: "number", step: "0.01" },
+  { id: "V7", label: "V7", type: "number", step: "0.01" },
+  { id: "V8", label: "V8", type: "number", step: "0.01" },
+  { id: "V9", label: "V9", type: "number", step: "0.01" },
+  { id: "V10", label: "V10", type: "number", step: "0.01" },
+  { id: "V11", label: "V11", type: "number", step: "0.01" },
+  { id: "V12", label: "V12", type: "number", step: "0.01" },
+  { id: "V13", label: "V13", type: "number", step: "0.01" },
+  { id: "V14", label: "V14", type: "number", step: "0.01" },
+  { id: "V15", label: "V15", type: "number", step: "0.01" },
+  { id: "V16", label: "V16", type: "number", step: "0.01" },
+  { id: "V17", label: "V17", type: "number", step: "0.01" },
+  { id: "V18", label: "V18", type: "number", step: "0.01" },
+  { id: "V19", label: "V19", type: "number", step: "0.01" },
+];
 function VendorDataUpload() {
   const [activeTab, setActiveTab] = useState("upload"); // upload | list
   const [formData, setFormData] = useState({});
@@ -52,7 +114,7 @@ function VendorDataUpload() {
   const fetchCoals = async () => {
     try {
       const res = await axios.get("http://localhost:8000/api/vendor_coals");
-      setCoalList(res.data['data'] || []);
+      setCoalList(res.data["data"] || []);
     } catch (err) {
       console.error("Error fetching coals:", err);
     }
@@ -74,24 +136,18 @@ function VendorDataUpload() {
     e.preventDefault();
     setIsLoading(true);
     try {
-      const formDataToSend = new FormData();
-      Object.entries(formData).forEach(([key, value]) => {
-        if (value !== "") formDataToSend.append(key, value);
-      });
-      if (file) formDataToSend.append("file", file);
-
       const response = await axios.post(
-        "http://localhost:8000/api/vendor/coal/upload",
-        formDataToSend,
-        { headers: { "Content-Type": "multipart/form-data" } }
+        "http://localhost:8000/api/vendor-coal/manual",
+        formData, // send as JSON
+        { headers: { "Content-Type": "application/json" } }
       );
 
-      if (response.data.success) {
+      if (response.data) {
         setMessage({ type: "success", text: "Coal uploaded successfully" });
         setFormData({});
         setFile(null);
       } else {
-        throw new Error(response.data.error);
+        throw new Error("Unexpected error");
       }
     } catch (err) {
       setMessage({ type: "error", text: err.message });
@@ -262,9 +318,9 @@ function VendorDataUpload() {
 
                       setFormData((prev) => ({
                         ...prev,
-                        ...result.data,
+                        ...result.coal_data, // 👈 match schema
                         coal_name:
-                          result.data.coal_name ||
+                          result.coal_data?.coal_name ||
                           prev.coal_name ||
                           file.name.replace(/\.pdf$/i, "").trim(),
                       }));
